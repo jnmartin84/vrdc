@@ -1,12 +1,15 @@
 #include <kos.h>
 #include <stdlib.h>
 
-//#include "map.h"
-//#include "cheader.h"
-#include "pal1.h"
 #include "vrbg.h"
 
-#include "beginner.h"
+//#include "pal1.h"
+//#include "pal2.h"
+#include "pal3.h"
+
+//#include "beginner.h"
+//#include "medium.h"
+#include "expert.h"
 
 typedef float __attribute__((aligned(32))) Matrix[4][4];
 
@@ -42,7 +45,9 @@ Point3D projectPointOntoPlane(Point3D A, Point3D B, Point3D C, Point3D P) {
     Point3D normal = crossProduct(AB, AC);
 
     float D = -dotProduct(normal, A);
-    float t = -(dotProduct(normal, P) + D) / dotProduct(normal, normal);
+    float dnn = dotProduct(normal, normal);
+    if (dnn == 0.0f) dnn = 0.0001f;
+    float t = -(dotProduct(normal, P) + D) / dnn;
 
     Point3D projected = {
         P.x + t * normal.x,
@@ -92,6 +97,7 @@ Matrix R_ModelMatrix;
 Matrix R_ProjectionMatrix;
 Matrix R_RotX;
 Matrix R_RotY;
+Matrix R_RotZ;
 Matrix R_Tran;
 
 float camerax = 0.0f;
@@ -107,38 +113,24 @@ float viewpitch = 0.0f;
 // this is just for cleaner code
 #define lerp(a, b) (invt * (a) + t * (b))
 // lerp two 32-bit colors
-static uint32_t color_lerp(float ft, uint32_t c1, uint32_t c2) {
-	uint8_t t = (ft * 255);
-   	uint32_t maskRB = 0xFF00FF;  // Mask for Red & Blue channels
-    uint32_t maskG  = 0x00FF00;  // Mask for Green channel
-    uint32_t maskA  = 0xFF000000; // Mask for Alpha channel
 
-    // Interpolate Red & Blue
-    uint32_t rb = ((((c2 & maskRB) - (c1 & maskRB)) * t) >> 8) + (c1 & maskRB);
-    
-    // Interpolate Green
-    uint32_t g  = ((((c2 & maskG) - (c1 & maskG)) * t) >> 8) + (c1 & maskG);
+static float xout,yout,zout,wout;
 
-    // Interpolate Alpha
-    uint32_t a  = ((((c2 & maskA) >> 24) - ((c1 & maskA) >> 24)) * t) >> 8;
-    a = (a + (c1 >> 24)) << 24;  // Shift back into position
-
-    return (a & maskA) | (rb & maskRB) | (g & maskG);
-}
-
-static void nearz_clip(float x0,float y0,float z0,float w0,float x1,float y1, float z1,float w1,
-				float *xout, float *yout, float *zout, float *wout)
+static void nearz_clip(float x0,float y0,float z0,float w0,float x1,float y1, float z1,float w1)
 {
 	const float d0 = w0 + z0;
 	const float d1 = w1 + z1;
 
-	float t = (fabsf(d0) * (1.0f / sqrtf((d1 - d0) * (d1 - d0)))) + 0.000001f;
+	float d1subd0 = d1 - d0;
+	if (d1subd0 == 0.0f) d1subd0 = 0.0001f;
+
+	float t = (fabsf(d0) * (1.0f / sqrtf(d1subd0 * d1subd0))) + 0.000001f;
 	float invt = 1.0f - t;
 
-	*wout = lerp(w0, w1);
-	*xout = lerp(x0, x1);
-	*yout = lerp(y0, y1);
-	*zout = lerp(z0, z1);
+	wout = lerp(w0, w1);
+	xout = lerp(x0, x1);
+	yout = lerp(y0, y1);
+	zout = lerp(z0, z1);
 }
 
 
@@ -149,10 +141,14 @@ static inline void perspdiv(float *x, float *y, float *z, float w)
 	*x = (*x * invw);
 	*y = (-*y *invw);
 
-	if (w == 1.0f)
-		*z = 1.0f / (1.0001f + (*z));
-	else
+	if (w == 1.0f) {
+		float zz = *z;
+		if (zz == -1.0001f) zz = -1.0002f;
+		*z = 1.0f / (1.0001f + zz);
+	}
+	else {
 		*z = invw;
+	}
 }
 
 // lifted from modern libultra
@@ -243,9 +239,9 @@ static inline void R_Viewport(Matrix mf, int x, int y, int width, int height) {
 
 
 KOS_INIT_FLAGS(INIT_DEFAULT);
-pvr_init_params_t pvr_params = { { 0, 0, PVR_BINSIZE_16, 0, 0 },
-				(2048576*2) / 2,
-				1, // dma enabled
+pvr_init_params_t pvr_params = { { PVR_BINSIZE_16, 0, 0, 0, 0 },
+				2048576,
+				0, // dma disabled
 				0, // fsaa
 				0, // 1 is autosort disabled
 				2, // extra OPBs
@@ -306,7 +302,7 @@ void draw_pvr_line(vector_t *v1, vector_t *v2, int color)
 	vert->argb = color;
 
 //	sq_fast_cpy(SQ_MASK_DEST(PVR_TA_INPUT), pvrlineverts, 4);
-	pvr_list_prim(PVR_LIST_TR_POLY, pvrlineverts, 4 * sizeof(pvr_vertex_t));
+	pvr_prim(pvrlineverts, 4 * sizeof(pvr_vertex_t));
 }
 
 void compute_norm(float x0, float y0, float z0, float x1, float y1, float z1, float x2, float y2, float z2, float *nx, float *ny, float *nz) {
@@ -329,7 +325,7 @@ void compute_norm(float x0, float y0, float z0, float x1, float y1, float z1, fl
 		*nz = uvk;
 }
 
-uint8_t __attribute__((aligned(32))) tr_buf[2048576*2];
+//uint8_t __attribute__((aligned(32))) tr_buf[2048576*2];
 
 pvr_vertex_t __attribute__((aligned(32))) verts[4];
 pvr_poly_cxt_t ccxt;
@@ -341,30 +337,28 @@ static pvr_vertex_t skypic_verts[4];
 float xangle = 0;
 float yangle = 0;
 float zangle = 0;
+pvr_dr_state_t dr_state;
+
+float lastnx = -100000.0f;
+float lastny = -100000.0f;
+float lastnz = -100000.0f;
 
 int main(int argc, char **argv)
 {
 	pvr_init(&pvr_params);
 
-	pvr_set_vertbuf(PVR_LIST_TR_POLY, tr_buf, 2048576*2);
+//	pvr_set_vertbuf(PVR_LIST_TR_POLY, tr_buf, 2048576*2);
 
 	pvr_ptr_t pvrsky = pvr_mem_malloc(256 * 256 * 2);
 	pvr_poly_cxt_t pvrskycxt;
 	pvr_poly_hdr_t pvrskyhdr;
 
-	pvr_poly_cxt_txr(&pvrskycxt, PVR_LIST_TR_POLY, PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED, 256, 256, pvrsky, PVR_FILTER_BILINEAR);
+	pvr_poly_cxt_txr(&pvrskycxt, PVR_LIST_OP_POLY, PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED, 256, 256, pvrsky, PVR_FILTER_BILINEAR);
 	pvrskycxt.depth.write = PVR_DEPTHWRITE_DISABLE;
 	pvrskycxt.txr.uv_flip = PVR_UVFLIP_NONE;
 	pvr_poly_compile(&pvrskyhdr, &pvrskycxt);
 	pvr_txr_load(vrbg__data, pvrsky, 256*256*2);
-#if 0
-        uint16_t *dst16 = (uint16_t *)pvrsky;
-	uint16_t *src16 = (uint16_t *)vrbg__data;
-	for (int i=0;i<131072;i++) {
-//		dbgio_printf("src16[i] == %04x\n", src16[i]);
-		dst16[i] = src16[i];
-	}
-#endif
+
 	skypic_verts[0].flags = PVR_CMD_VERTEX;
 	skypic_verts[0].x = 0;
 	skypic_verts[0].y = 480;
@@ -389,7 +383,7 @@ int main(int argc, char **argv)
 	skypic_verts[3].z = 0.0000011f;
 	skypic_verts[3].argb = 0xffeeeeee;
 
-	R_Frustum(R_ProjectionMatrix, -16.0f, 16.0f, -9.0f, 9.0f, 8.0f, 16384.0f, 1.0f);
+	R_Frustum(R_ProjectionMatrix, -18.0f, 18.0f, -12.0f, 12.0f, 8.0f, 16384.0f, 1.0f);
 	R_Viewport(R_ViewportMatrix, 0, 0, 640, 480);
 
 	pvr_set_bg_color(0, 32.0f/255.0f, 1.0f);
@@ -401,7 +395,7 @@ int main(int argc, char **argv)
 #define PVR_MIN_Z 0.000001f
 	pvr_set_zclip(PVR_MIN_Z);
 
-	pvr_poly_cxt_txr(&ccxt, PVR_LIST_TR_POLY, PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED, 32, 32, tex, PVR_FILTER_NONE);
+	pvr_poly_cxt_txr(&ccxt, PVR_LIST_OP_POLY, PVR_TXRFMT_ARGB1555 | PVR_TXRFMT_TWIDDLED, 32, 32, tex, PVR_FILTER_NONE);
 
 	ccxt.gen.shading = PVR_SHADE_GOURAUD;
 	ccxt.gen.culling = PVR_CULLING_NONE;
@@ -440,14 +434,14 @@ int main(int argc, char **argv)
 				exit(0);
 
 			if (cont->buttons & CONT_Y) {
-				cameraz -= (200 * sinf(viewangle));
-				camerax += (200 * cosf(viewangle));
+				cameraz -= (50 * sinf(viewangle));
+				camerax += (50 * cosf(viewangle));
 				//cameray += (100 * sinf(viewpitch));
 			}
 
 			if (cont->buttons & CONT_A) {
-				cameraz += (200 * sinf(viewangle));
-				camerax -= (200 * cosf(viewangle));
+				cameraz += (50 * sinf(viewangle));
+				camerax -= (50 * cosf(viewangle));
 				//cameray -= (100 * sinf(viewpitch));
 			}
 
@@ -469,10 +463,31 @@ int main(int argc, char **argv)
 //			if (cont->rtrig) cameray +=20;
 		}
 
-		R_RotateX(R_RotX, sinf(viewpitch+/*0.9*/1.05), cosf(viewpitch+/*0.9*/1.05));
+		if (viewangle < 0) viewangle += F_PI * 2.0f;
+		if (viewangle > F_PI * 2.0f) viewangle -= F_PI * 2.0f;
+
+		int do_rotz = 0;
+		if (lastnx != -100000.0f) {
+			float rotangle = atan2f(lastny, sqrtf((lastnx*lastnx)+(lastnz*lastnz))) - viewangle;
+			if (rotangle < 0) rotangle += F_PI * 2.0f;
+			if (rotangle > F_PI * 2.0f) rotangle -= F_PI * 2.0f;
+
+			dbgio_printf("nx %f ny %f nz %f\nviewangle %f\nrotangle %f\n", lastnx, lastny, lastnz, viewangle, rotangle);
+
+			R_RotateZ(R_RotZ, sinf(rotangle), cosf(rotangle));
+			do_rotz = 1;
+		}
+
+		R_RotateX(R_RotX, sinf(viewpitch+/*0.9*/1.1), cosf(viewpitch+/*0.9*/1.1));
 		R_RotateY(R_RotY, sinf(viewangle), cosf(viewangle));
 		R_Translate(R_Tran, -camerax, -cameray, -cameraz);
+//		if (do_rotz)  {
+//			mat_load(&R_RotZ);
+//		mat_apply(&R_ViewportMatrix);
+//		} else {
 		mat_load(&R_ViewportMatrix);
+
+//		}
 		mat_apply(&R_ProjectionMatrix);
 		mat_apply(&R_RotX);
 		mat_apply(&R_RotY);
@@ -502,9 +517,12 @@ int main(int argc, char **argv)
 
 		pvr_wait_ready();
 		pvr_scene_begin();
-		pvr_list_prim(PVR_LIST_TR_POLY, &pvrskyhdr, sizeof(pvr_poly_hdr_t));
-		pvr_list_prim(PVR_LIST_TR_POLY, skypic_verts, sizeof(pvr_vertex_t)*4);
-		pvr_list_prim(PVR_LIST_TR_POLY, &chdr, sizeof(pvr_poly_hdr_t));
+		pvr_list_begin(PVR_LIST_OP_POLY);
+		pvr_dr_init(&dr_state);
+
+		pvr_prim(&pvrskyhdr, sizeof(pvr_poly_hdr_t));
+		pvr_prim(skypic_verts, sizeof(pvr_vertex_t)*4);
+		pvr_prim(&chdr, sizeof(pvr_poly_hdr_t));
 
                 int current_segment_number = -1;
 		for (int j=0;j<NUM_MODELS;j++) {
@@ -526,10 +544,18 @@ int main(int argc, char **argv)
 
 		Point3D P = {camerax, cameray, cameraz};  // Point above the triangle
 
-		dbgio_printf("camera is in segment %d\n", current_segment_number);
+		last_camerax = camerax;
+		last_cameraz = cameraz;
+
+//		dbgio_printf("camera is in segment %d\n", current_segment_number);
 
 		int over_face_found = 0;
 		next_camera_y = -1.0f;
+
+//		float cnx = (lastnx != -100000.0f) ? lastnx : 0.0f;
+//		float cny = (lastny != -100000.0f) ? lastny : 0.0f;
+//		float cnz = (lastnz != -100000.0f) ? lastnz : 0.0f;
+
 		for (int j=0;j<NUM_MODELS;j++) {
 
 		int NUM_FACES = face_counts[j];
@@ -541,19 +567,23 @@ int main(int argc, char **argv)
 			int v1 = models_faces[j][i][1];
 			int v2 = models_faces[j][i][2];
 
+//			cnx *= 20;
+//			cny *= 20;
+//			cnz *= 20;
+
 			float w0,w1,w2;
 
 			float x0 = models_vertices[j][v2][0];
-			float y0 = models_vertices[j][v2][1] * 0.4f;
+			float y0 = (models_vertices[j][v2][1] * 0.4f);
 			float z0 = models_vertices[j][v2][2];
 
 
 			float x1 = models_vertices[j][v1][0];
-			float y1 = models_vertices[j][v1][1] * 0.4f;
+			float y1 = (models_vertices[j][v1][1] * 0.4f);
 			float z1 = models_vertices[j][v1][2];
 
 			float x2 = models_vertices[j][v0][0];
-			float y2 = models_vertices[j][v0][1] * 0.4f;
+			float y2 = (models_vertices[j][v0][1] * 0.4f);
 			float z2 = models_vertices[j][v0][2];
 //			if (!over_face_found) {
 				Point3D A = {x0, y0, z0};
@@ -562,14 +592,38 @@ int main(int argc, char **argv)
 				over_this_face = isPointInsideTriangle(A, B, C, P);
 				over_face_found = over_this_face;
 				if (next_camera_y == -1.0f) {
-					if (over_this_face) 
+					if (over_this_face) {
 						next_camera_y = fmaxf(y0, fmaxf(y1, y2)) + 50;
+						lastnx = models_normals[j][i][0];
+						lastny = models_normals[j][i][1];
+						lastnz = models_normals[j][i][2];
+						if (lastny < 0) {
+							lastnx = -lastnx;
+							lastny = -lastny;
+							lastnz = -lastnz;
+						}
+						if (lastnx == -0.0f) lastnx = 0.0f;
+						if (lastny == -0.0f) lastny = 0.0f;
+						if (lastnz == -0.0f) lastnz = 0.0f;
+					}
 				} else {
 					if (over_this_face) {
 
 					if ((fmaxf(y0, fmaxf(y1, y2)) + 50) < next_camera_y) {
 						next_camera_y = fmaxf(y0, fmaxf(y1, y2)) + 50;
 
+						lastnx = models_normals[j][i][0];
+						lastny = models_normals[j][i][1];
+						lastnz = models_normals[j][i][2];
+						if (lastny < 0) {
+							lastnx = -lastnx;
+							lastny = -lastny;
+							lastnz = -lastnz;
+						}
+
+						if (lastnx == -0.0f) lastnx = 0.0f;
+						if (lastny == -0.0f) lastny = 0.0f;
+						if (lastnz == -0.0f) lastnz = 0.0f;
 					}
 					}
 				}
@@ -581,21 +635,22 @@ int main(int argc, char **argv)
 
 			uint32_t fc,fc2;
 
-			if (over_this_face) {
-				fc = 0xffff0000;
-				fc2 = 0xffff0000;
-			} else {
+			{
+//			if (over_this_face) {
+//				fc = 0xffff0000;
+//				fc2 = 0xffff0000;
+//			} else {
 			int ci = models_colors[j][i][0];
 			float r = (float)colors[ci][0] / 255.0f;
 			float g = (float)colors[ci][1] / 255.0f;
 			float b = (float)colors[ci][2] / 255.0f;
-			fc = PVR_PACK_COLOR((ci != 0),r,g,b);
+			fc2 = PVR_PACK_COLOR((ci != 0),r,g,b);
 
 			int ci2 = models_colors[j][i][1];
 			float r2 = (float)colors[ci2][0] / 255.0f;
 			float g2 = (float)colors[ci2][1] / 255.0f;
 			float b2 = (float)colors[ci2][2] / 255.0f;
-			fc2 = PVR_PACK_COLOR((ci2 != 0),r2,g2,b2);
+			fc = PVR_PACK_COLOR((ci2 != 0),r2,g2,b2);
 			}
 
 			uint32_t vismask = (z0 > -w0) | ((z1 > -w1) << 1) | ((z2 > -w2) << 2);
@@ -609,32 +664,44 @@ int main(int argc, char **argv)
 			} else {
 				switch (vismask) {
 				case 1:
-				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1,&x1,&y1,&z1,&w1);
-				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2,&x2,&y2,&z2,&w2);
+				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1);//,&x1,&y1,&z1,&w1);
+				x1=xout;y1=yout;z1=zout;w1=wout;
+				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2);//,&x2,&y2,&z2,&w2);
+				x2=xout;y2=yout;z2=zout;w2=wout;
 				break;
 				case 2:
-				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1,&x0,&y0,&z0,&w0);
-				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2,&x2,&y2,&z2,&w2);
+				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1);//&x0,&y0,&z0,&w0);
+				x0=xout;y0=yout;z0=zout;w0=wout;
+				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2);//,&x2,&y2,&z2,&w2);
+				x2=xout;y2=yout;z2=zout;w2=wout;
 				break;
 				case 3:
 				usespare = 1;
-				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2,&x3,&y3,&z3,&w3);
-				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2,&x2,&y2,&z2,&w2);
+				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2);//,&x3,&y3,&z3,&w3);
+				x3=xout;y3=yout;z3=zout;w3=wout;
+				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2);//,&x2,&y2,&z2,&w2);
+				x2=xout;y2=yout;z2=zout;w2=wout;
 				break;
 				case 4:
-				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2,&x0,&y0,&z0,&w0);
-				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2,&x1,&y1,&z1,&w1);
+				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2);//,&x0,&y0,&z0,&w0);
+				x0=xout;y0=yout;z0=zout;w0=wout;
+				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2);//,&x1,&y1,&z1,&w1);
+				x1=xout;y1=yout;z1=zout;w1=wout;
 				break;
 				case 5:
 				usespare = 1;
-				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2,&x3,&y3,&z3,&w3);
-				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1,&x1,&y1,&z1,&w1);
+				nearz_clip(x1,y1,z1,w1,x2,y2,z2,w2);//,&x3,&y3,&z3,&w3);
+				x3=xout;y3=yout;z3=zout;w3=wout;
+				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1);//,&x1,&y1,&z1,&w1);
+				x1=xout;y1=yout;z1=zout;w1=wout;
 				break;
 				case 6:
 				usespare = 1;
 				x3 = x2; y3 = y2; z3 = z2; w3 = w2;
-				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2,&x2,&y2,&z2,&w2);
-				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1,&x0,&y0,&z0,&w0);
+				nearz_clip(x0,y0,z0,w0,x2,y2,z2,w2);//,&x2,&y2,&z2,&w2);
+				x2=xout;y2=yout;z2=zout;w2=wout;
+				nearz_clip(x0,y0,z0,w0,x1,y1,z1,w1);//,&x0,&y0,&z0,&w0);
+				x0=xout;y0=yout;z0=zout;w0=wout;
 				break;
 				}
 			}
@@ -677,7 +744,7 @@ sendit:
 				verts[3].argb = fc;
 			}
 
-			pvr_list_prim(PVR_LIST_TR_POLY, &verts[0], sizeof(pvr_vertex_t) * (3 + usespare));
+			pvr_prim(&verts[0], sizeof(pvr_vertex_t) * (3 + usespare));
 
 #if 0
 			vector_t a;
@@ -709,9 +776,10 @@ sendit:
 #endif
 
 endloop:
+			continue;
 		} // for i num faces
 		} // for j num models
-
+		pvr_list_finish();
 		pvr_scene_finish();
 	}
 	return 0;
